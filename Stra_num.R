@@ -237,7 +237,7 @@ for (cas in 1:4) {
     x <- mvrnorm(N, rep(0, d-1), Sigma)
   }
   if (cas == 2) {
-    Sigma <- matrix(1.5, nrow = d-1, ncol = d-1)+ 0.5 * diag(d-1)
+    Sigma <- matrix(0.5, nrow = d-1, ncol = d-1)+ 0.5 * diag(d-1)
     x <- mvrnorm(N, rep(1.5, d-1), Sigma)
   }
   if (cas == 3) {
@@ -263,12 +263,12 @@ for (cas in 1:4) {
   end_time - start_time
   par0 <- result$par
   
-  result_table_mse <- matrix(rep(0, 16), nrow = 4, ncol = 4)
-  col <- c(1000, 1500, 2000, 2500)
-  row <- c("uniform", "osmac", "stratified-uni", "stratified-osmac")
+  result_table_mse <- matrix(rep(0, 10), nrow = 2, ncol = 5)
+  col <- c(1, 5, 10, 50, 100)
+  row <- c("stratified-uni", "stratified-osmac")
   for (i in row) {
     for (j in col) {
-      result <- sub_est_sim(data, i, 500, j, 1000, d, par0)
+      result <- sub_est_sim(data, i, 500, 1000, 1000, d, par0, m=j)
       i1 <- which(row == i)
       j1 <- which(col == j)
       result_table_mse[i1, j1] <- result[[2]]
@@ -276,6 +276,6 @@ for (cas in 1:4) {
     print(i)
   }
   result_table_mse
-  write.csv(result_table_mse, paste0("logistic_regression_case", cas, ".csv"))
+  write.csv(result_table_mse, paste0("logistic_regression_case", cas, "(str_num_n=1000).csv"))
 }
 

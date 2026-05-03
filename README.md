@@ -8,8 +8,8 @@ The following files are included:
 | File Name | Description |
 | :--- | :--- |
 | `Logistic_regression.R` | Raw results for the logistic regression across different methods. |
-| `Poisson_regression.R` | Raw results for the Poisson regression across different methods and differnet numbers of strata. |
-| `Optimal.R` | Raw results for the optimal stratified subsampling. |
+| `SVM.R` | Raw results for the SVM across different methods and differnet numbers of strata. |
+| `Stra_num.R` | Raw results for the logistic regression across differnet numbers of strata. |
 | `MSE_estimation.R` | Raw results for the MSE estimation. |
 | `Time.R` | Raw timing results across different methods. |
 | `Plot.R` | Generate the figures in the Simulation section. |

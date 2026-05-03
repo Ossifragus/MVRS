@@ -1,11 +1,37 @@
-## Poisson regression
-L <- function(par, X, y) {
-  return(-1 * sum(y * X %*% par - exp(X %*% par)) / length(y))
+getMLE <- function(x, y, w) {
+  d <- ncol(x)
+  beta <- rep(0, d)
+  loop  <- 1
+  Loop  <- 1000
+  msg <- "NA"
+  while (loop <= Loop) {
+    pr <- c(1 - 1 / (1 + exp(x %*% beta)))
+    H <- t(x) %*% (pr * (1 - pr) * w * x)
+    S <- colSums((y - pr) * w * x)
+    tryCatch(
+      {shs <- NA
+      shs <- solve(H, S) },
+      error=function(e){
+        cat("\n ERROR :", loop, conditionMessage(e), "\n")})
+    if (is.na(shs[1])) {
+      msg <- "Not converge"
+      beta <- loop <- NA
+      break
+    }
+    beta.new <- beta + shs
+    tlr  <- sum((beta.new - beta)^2)
+    beta  <- beta.new
+    if(tlr < 0.000001) {
+      msg <- "Successful convergence"
+      break
+    }
+    if (loop == Loop)
+      warning("Maximum iteration reached")
+    loop  <- loop + 1
+  }
+  list(par=beta, message=msg, iter=loop)
 }
 
-Lw <- function(par, X, y, w) {
-  return(-1 * sum((y * X %*% par - exp(X %*% par)) * w) / length(y))
-}
 
 library(data.table)
 stratify <- function(value, k) {
@@ -23,7 +49,7 @@ stratify <- function(value, k) {
   ))
 }
 
-sub_est_sim <- function(data, method, n0 = 200, n = 500, sim_num = 200, d = 5, par0, m = 10) {
+sub_est_sim <- function(data, method, n0 = 500, n = 1000, sim_num = 100, d = 15, par0, m = 10) {
   N <- nrow(data)
   ## uniform subsampling
   if (method == "uniform") {
@@ -31,16 +57,17 @@ sub_est_sim <- function(data, method, n0 = 200, n = 500, sim_num = 200, d = 5, p
     mse_uni <- matrix(0, nrow = sim_num, ncol = d)
     start_time <- Sys.time()
     for (i in 1:sim_num) {
-      # subsampling
       index <- sample(1:N, n, replace = TRUE)
       data_uni <- data[index, ]
-      # estimation
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = as.matrix(cbind(rep(1, length(index)), data_uni[, -1])), y = data_uni[, 1])
-      par_uni[i, ] <- result$par
-      # MSE estimation
       X <- as.matrix(cbind(rep(1, n), data_uni[, -1]))
-      w <- solve(t(X) %*% (X * as.numeric(exp(X %*% result$par))) / n)
-      inf <- as.numeric(data_uni[, 1] - exp(X %*% result$par)) * (X %*% w) / n
+      y <- data_uni[, 1]
+      result<-getMLE(X, y, rep(1/n,n))
+      par_uni[i, ] <- result$par
+      # mse
+      p <- 1 - 1 / (1 + exp(X %*% par))
+      w <- p * (1 - p)
+      w <- solve(t(X) %*% (X * as.numeric(w)) / n)
+      inf <- as.numeric(data_uni[, 1] - p) * (X %*% w) / n
       mse_uni[i, ] <- diag(t(inf) %*% inf) * n / (n - d)
     }
     end_time <- Sys.time()
@@ -62,23 +89,27 @@ sub_est_sim <- function(data, method, n0 = 200, n = 500, sim_num = 200, d = 5, p
     for (i in 1:sim_num) {
       # pilot
       index <- sample(1:N, n0, replace = TRUE)
-      data_poi <- data[index, ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = as.matrix(cbind(rep(1, length(index)), data_poi[, -1])), y = data_poi[, 1])
-      par_poi <- result$par
+      data_p <- data[index, ]
+      result<-getMLE(as.matrix(cbind(rep(1,length(index)),data_p[,-1])),data_p[,1],rep(1/length(data_p[,1]),length(data_p[,1])))
+      par_p <- result$par
       # prob
       X <- as.matrix(cbind(rep(1, N), data[, -1]))
-      w <- solve(t(X[index, ]) %*% (X[index, ] * as.numeric(exp(X[index, ] %*% par_poi))))
-      sub_pro <- sqrt((data[, 1] - exp(X %*% par_poi))^2 * rowSums((X %*% w)^2))
+      p <- 1 - 1 / (1 + exp(X %*% par_p))
+      w <- p * (1 - p)
+      w <- solve(t(X[index, ]) %*% (X[index, ] * w[index]))
+      sub_pro <- sqrt((data[, 1] - p)^2 * rowSums((X %*% w)^2))
       sub_pro <- sub_pro / sum(sub_pro)
       # subsampling
       index <- sample(1:N, n, replace = TRUE, prob = sub_pro)
-      data_sub <- data[index, ]
-      result <- optim(par = par00, Lw, hessian = FALSE, method = "BFGS", X = as.matrix(cbind(rep(1, length(index)), data_sub[, -1])), y = data_sub[, 1], w = sub_pro[1] / sub_pro[index])
+      X_sub <- as.matrix(cbind(rep(1, length(index)), data[index, -1]))
+      y_sub <- data[index, 1]
+      result<-getMLE(X_sub,y_sub,1/sub_pro[index])
       par_sub[i, ] <- result$par
-      # MSE estimation
-      X <- as.matrix(cbind(rep(1, n), data_sub[, -1]))
-      w <- solve(t(X / sub_pro[index] / N) %*% (X * as.numeric(exp(X %*% par_poi))) / n)
-      inf <- as.numeric(data_sub[, 1] - exp(X %*% result$par)) * (X %*% w) / sub_pro[index] / n / N
+      # mse
+      p <- 1 - 1 / (1 + exp(X_sub %*% result$par))
+      w <- p * (1 - p)
+      w <- solve(t(X_sub / sub_pro[index]) %*% (X_sub * as.numeric(w))) * n / N
+      inf <- as.numeric(y_sub - p) * (X_sub %*% w) / sub_pro[index] / n * N
       mse_sub[i, ] <- diag(t(inf) %*% inf) * n / (n - d)
     }
     end_time <- Sys.time()
@@ -92,6 +123,7 @@ sub_est_sim <- function(data, method, n0 = 200, n = 500, sim_num = 200, d = 5, p
     }
   }
   
+  
   if (method == "stratified-uni") {
     par_str <- matrix(0, nrow = sim_num, ncol = d)
     mse_str <- matrix(0, nrow = sim_num, ncol = d)
@@ -99,19 +131,23 @@ sub_est_sim <- function(data, method, n0 = 200, n = 500, sim_num = 200, d = 5, p
     for (i in 1:sim_num) {
       # pilot
       index <- sample(1:N, n0, replace = TRUE)
-      data_poi <- data[index, ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = as.matrix(cbind(rep(1, length(index)), data_poi[, -1])), y = data_poi[, 1])
-      par_poi <- result$par
+      data_p <- data[index, ]
+      result<-getMLE(as.matrix(cbind(rep(1,length(index)),data_p[,-1])),data_p[,1],rep(1/length(data_p[,1]),length(data_p[,1])))
+      par_p <- result$par
       # stra
-      X_poi <- as.matrix(cbind(rep(1, n0), data_poi[, -1]))
-      y_poi <- data_poi[, 1]
-      w_poi <- solve(t(X_poi) %*% (X_poi * as.numeric(X_poi %*% par_poi)) / n0)
-      V <- cov(X_poi %*% w_poi * as.numeric(y_poi - exp(X_poi %*% par_poi)))
-      A <- svd(V, d, d)$u
+      X_p <- as.matrix(cbind(rep(1, n0), data_p[, -1]))
+      y_p <- data_p[, 1]
+      p1 <- 1 - 1 / (1 + exp(X_p %*% par_p))
+      w1 <- p1 * (1 - p1)
+      w1 <- solve(t(X_p) %*% (X_p * as.numeric(w1)) / n0)
+      V <- cov(X_p %*% w1 * as.numeric(y_p - p1))
+      S <- svd(V, d, d)
+      A <- S$u
       sub_pro <- rep(1 / N, N)
       X <- as.matrix(cbind(rep(1, N), data[, -1]))
-      Y <- as.numeric(data[, 1] - exp(X %*% result$par)) * (X %*% w_poi %*% A)
-      str_result <- stratify(Y[, 1], m)
+      p <- 1 - 1 / (1 + exp(X %*% par_p))
+      Y <- as.numeric(data[, 1] - p) * (X %*% (w1 %*% A[, 1]))
+      str_result <- stratify(Y, m)
       
       # subsampling
       index <- c()
@@ -126,19 +162,24 @@ sub_est_sim <- function(data, method, n0 = 200, n = 500, sim_num = 200, d = 5, p
         num <- c(num, nj)
       }
       data_str <- data[index, ]
-      result <- optim(par = par00, Lw, hessian = FALSE, method = "BFGS", X = as.matrix(cbind(rep(1, length(index)), data_str[, -1])), y = data_str[, 1], w = prob1[1] / prob1)
+      result<-getMLE(as.matrix(cbind(rep(1,length(index)),data_str[,-1])),data_str[,1],prob1[1]/prob1)
       par_str[i, ] <- result$par
       # MSE estimation
       X <- as.matrix(cbind(rep(1, nrow(data_str)), data_str[, -1]))
-      w <- solve(t(X / prob1 / N) %*% (X * as.numeric(exp(X %*% result$par))))
       inf <- matrix(0, d, d)
+      w <- matrix(0, d, d)
       for (j in 1:m) {
         indexj <- (sum(num[1:j]) + 1):sum(num[1:j + 1])
         nj <- length(indexj)
         Xj <- as.matrix(cbind(rep(1, nj), data_str[indexj, -1]))
-        score <- as.numeric(data_str[indexj, 1] - exp(Xj %*% result$par)) * Xj / prob1[indexj] / N * nj
+        pj <- 1 - 1 / (1 + exp(Xj %*% result$par))
+        score <- as.numeric(data_str[indexj, 1] - pj) * (Xj) / prob1[indexj] / N * nj
+        w_j <- pj * (1 - pj)
+        w_j <- t(Xj / prob1[indexj]) %*% (Xj * as.numeric(w_j)) / N
+        w <- w + w_j
         inf <- inf + cov(score) / sum(sub_pro[str_result$index[[j]]])
       }
+      w <- solve(w)
       mse_str[i, ] <- diag(w %*% inf %*% w) / n * n / (n - d)
     }
     end_time <- Sys.time()
@@ -159,22 +200,26 @@ sub_est_sim <- function(data, method, n0 = 200, n = 500, sim_num = 200, d = 5, p
     for (i in 1:sim_num) {
       # pilot
       index <- sample(1:N, n0, replace = TRUE)
-      data_poi <- data[index, ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = as.matrix(cbind(rep(1, length(index)), data_poi[, -1])), y = data_poi[, 1])
-      par_poi <- result$par
-      # prob
+      data_p <- data[index, ]
+      result<-getMLE(as.matrix(cbind(rep(1,length(index)),data_p[,-1])),data_p[,1],rep(1/length(data_p[,1]),length(data_p[,1])))
+      par_p <- result$par
+      # stra
+      X_p <- as.matrix(cbind(rep(1, n0), data_p[, -1]))
+      y_p <- data_p[, 1]
+      p1 <- 1 - 1 / (1 + exp(X_p %*% par_p))
+      w1 <- p1 * (1 - p1)
+      w1 <- solve(t(X_p) %*% (X_p * as.numeric(w1)) / n0)
+      
       X <- as.matrix(cbind(rep(1, N), data[, -1]))
-      w <- solve(t(X[index, ]) %*% (X[index, ] * as.numeric(exp(X[index, ] %*% par_poi))))
-      sub_pro <- sqrt((data[, 1] - exp(X %*% par_poi))^2 * rowSums((X %*% w)^2))
+      p <- 1 - 1 / (1 + exp(X %*% par_p))
+      sub_pro <- sqrt((data[, 1] - p)^2 * rowSums((X %*% w1)^2))
       sub_pro <- sub_pro / sum(sub_pro)
       
-      X_poi <- as.matrix(cbind(rep(1, n0), data_poi[, -1]))
-      y_poi <- data_poi[, 1]
-      w_poi <- solve(t(X_poi) %*% (X_poi * as.numeric(X_poi %*% par_poi)) / n0)
-      V <- cov(X_poi %*% w_poi * as.numeric(y_poi - exp(X_poi %*% par_poi)))
-      A <- svd(V, d, d)$u
-      Y <- as.numeric(data[, 1] - exp(X %*% result$par)) * (X %*% w_poi %*% A)
-      str_result <- stratify(Y[, 1], m)
+      V <- cov(X_p %*% w1 * as.numeric(y_p - p1))
+      S <- svd(V, d, d)
+      A <- S$u
+      Y <- as.numeric(data[, 1] - p) * (X %*% (w1 %*% A[, 1]))
+      str_result <- stratify(Y, m)
       
       # subsampling
       index <- c()
@@ -189,19 +234,24 @@ sub_est_sim <- function(data, method, n0 = 200, n = 500, sim_num = 200, d = 5, p
         num <- c(num, nj)
       }
       data_str <- data[index, ]
-      result <- optim(par = par00, Lw, hessian = FALSE, method = "BFGS", X = as.matrix(cbind(rep(1, length(index)), data_str[, -1])), y = data_str[, 1], w = prob1[1] / prob1)
+      result<-getMLE(as.matrix(cbind(rep(1,length(index)),data_str[,-1])),data_str[,1],prob1[1]/prob1)
       par_str[i, ] <- result$par
       # MSE estimation
       X <- as.matrix(cbind(rep(1, nrow(data_str)), data_str[, -1]))
-      w <- solve(t(X / prob1 / N) %*% (X * as.numeric(exp(X %*% result$par))))
       inf <- matrix(0, d, d)
+      w <- matrix(0, d, d)
       for (j in 1:m) {
         indexj <- (sum(num[1:j]) + 1):sum(num[1:j + 1])
         nj <- length(indexj)
         Xj <- as.matrix(cbind(rep(1, nj), data_str[indexj, -1]))
-        score <- as.numeric(data_str[indexj, 1] - exp(Xj %*% result$par)) * Xj / prob1[indexj] / N * nj
-        inf <- inf + cov(score) / sum(sub_pro[str_result$index[[j]]])
+        pj <- 1 - 1 / (1 + exp(Xj %*% result$par))
+        score <- as.numeric(data_str[indexj, 1] - pj) * (Xj) / prob1[indexj] / N * nj
+        w_j <- pj * (1 - pj)
+        w_j <- t(Xj / prob1[indexj]) %*% (Xj * as.numeric(w_j)) / N
+        w <- w + w_j
+        if(nj > 1) inf <- inf + cov(score) / sum(sub_pro[str_result$index[[j]]])
       }
+      w <- solve(w)
       mse_str[i, ] <- diag(w %*% inf %*% w) / n * n / (n - d)
     }
     end_time <- Sys.time()
@@ -214,63 +264,68 @@ sub_est_sim <- function(data, method, n0 = 200, n = 500, sim_num = 200, d = 5, p
       MSE_est[i] <- mean(mse_str[, i])
     }
   }
-  
   time <- (end_time - start_time) / sim_num
   result <- list(MSE, sum(MSE), sum(MSE_est), time)
   return(result)
 }
 
+library(MASS)
+library(mvtnorm)
 for (cas in 1:4) {
-  N <- 1000000
-  library(MASS)
+  N = 500000
+  par <- 0.1 * rep(1, 15)
+  d <- length(par)
+
   set.seed(123)
-  if (cas == 1) { x <- matrix(runif(4 * N, 0, 1), nrow = N, ncol = 4, byrow = TRUE) }
-  if (cas == 2) { 
-    x1 <- runif(N, 0, 1)
-    x <- matrix(c(x1, x1 + runif(N, 0, 0.1), runif(2 * N, 0, 1)), nrow = N, ncol = 4, byrow = TRUE) 
+  if (cas == 1) {
+    Sigma <- matrix(0.5, nrow = d-1, ncol = d-1)+ 0.5 * diag(d-1)
+    x <- mvrnorm(N, rep(0, d-1), Sigma)
   }
-  if (cas == 3) { 
-    x1 <- runif(N, 0, 1)
-    x <- matrix(c(x1, x1 + runif(N, 0, 1), runif(2 * N, 0, 1)), nrow = N, ncol = 4, byrow = TRUE)
-    x1 <- runif(N, 0, 1) 
+  if (cas == 2) {
+    Sigma <- matrix(0.5, nrow = d-1, ncol = d-1)+ 0.5 * diag(d-1)
+    x <- mvrnorm(N, rep(1.5, d-1), Sigma)
   }
-  if (cas == 4) { 
-    x1 <- runif(N, 0, 1)
-    x <- matrix(c(x1, x1 + runif(N, 0, 1), runif(2 * N, -1, 1)), nrow = N, ncol = 4, byrow = TRUE) 
+  if (cas == 3) {
+    sds <- 1 / (1:(d-1))
+    Corr_mat <- matrix(0.5, nrow = (d-1), ncol = (d-1))
+    diag(Corr_mat) <- 1
+    Sigma <- diag(sds) %*% Corr_mat %*% diag(sds)
+    x <- mvrnorm(N, rep(0, d-1), Sigma)
   }
-  
-  par <- 0.5 * c(1, 1, 1, 1, 1)
-  y <- rep(0, N)
-  for (i in 1:N) {
-    y[i] <- rpois(1, exp(par[1] + x[i, ] %*% par[-1]))
-  }
+  if (cas == 4) x <- matrix(rexp((d-1) * N, rate = 2), nrow = N, ncol = d-1, byrow = TRUE)
+  p <- exp(par[1] + x %*% par[-1]) / (1 + exp(par[1] + x %*% par[-1]))
+  u <- runif(N, 0, 1)
+  y <- as.numeric(u < p)
+  sum(y)
   data <- cbind(y, x)
   data <- as.data.frame(data)
   
   X <- as.matrix(cbind(rep(1, N), data[, -1]))
   start_time <- Sys.time()
-  par00 <- c(0, 0, 0, 0, 0)
-  result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = X, y = y)
+  par00 <- rep(0, d)
+  result <- getMLE(X,y,rep(1/N,N))
   end_time <- Sys.time()
   end_time - start_time
   par0 <- result$par
   
   result_table_mse <- matrix(rep(0, 16), nrow = 4, ncol = 4)
   result_table_mse_est <- matrix(rep(0, 16), nrow = 4, ncol = 4)
-  col <- c(200, 500, 800, 1000)
+  col <- c(1000, 1500, 2000, 2500)
   row <- c("uniform", "osmac", "stratified-uni", "stratified-osmac")
   for (i in row) {
     for (j in col) {
-      result <- sub_est_sim(data, i, 200, j, 1000, 5, par0)
+      result <- sub_est_sim(data, i, 500, j, 1000, d, par0)
       i1 <- which(row == i)
       j1 <- which(col == j)
       result_table_mse[i1, j1] <- result[[2]]
       result_table_mse_est[i1, j1] <- result[[3]]
     }
+    print(i)
   }
   result_table_mse
   result_table_mse_est
   
-  write.csv(result_table_mse, paste0("emp_poisson_regression_case", cas, ".csv"))
-  write.csv(result_table_mse_est, paste0("est_poisson_regression_case", cas, ".csv"))
+  write.csv(result_table_mse, paste0("emp_logistic_regression_case", cas, ".csv"))
+  write.csv(result_table_mse_est, paste0("est_logistic_regression_case", cas, ".csv"))
 }
+

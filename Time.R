@@ -1,16 +1,41 @@
-## Poisson regression
-L <- function(par, X, y) {
-  X_par <- X %*% par
-  return(-1 * sum(y * X_par - exp(X_par)) / length(y))
+## Logistic regression
+getMLE <- function(x, y, w) {
+  d <- ncol(x)
+  beta <- rep(0, d)
+  loop  <- 1
+  Loop  <- 1000
+  msg <- "NA"
+  while (loop <= Loop) {
+    pr <- c(1 - 1 / (1 + exp(x %*% beta)))
+    H <- t(x) %*% (pr * (1 - pr) * w * x)
+    S <- colSums((y - pr) * w * x)
+    tryCatch(
+      {shs <- NA
+      shs <- solve(H, S) },
+      error=function(e){
+        cat("\n ERROR :", loop, conditionMessage(e), "\n")})
+    if (is.na(shs[1])) {
+      msg <- "Not converge"
+      beta <- loop <- NA
+      break
+    }
+    beta.new <- beta + shs
+    tlr  <- sum((beta.new - beta)^2)
+    beta  <- beta.new
+    if(tlr < 0.000001) {
+      msg <- "Successful convergence"
+      break
+    }
+    if (loop == Loop)
+      warning("Maximum iteration reached")
+    loop  <- loop + 1
+  }
+  list(par=beta, message=msg, iter=loop)
 }
 
-Lw <- function(par, X, y, w) {
-  X_par <- X %*% par  
-  return(-1 * sum((y * X_par - exp(X_par)) * w) / length(y))
-}
 
 
-sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, par0, m = 100) {
+sub_est_sim <- function(data, method, n0 = 1000, n = 1000, sim_num = 20, d = 15, par0, m = 10) {
   N <- nrow(data)
   X <- cbind(rep(1, N), data[, -1])
   data <- as.matrix(cbind(data[, 1], X))
@@ -21,7 +46,7 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
     for (i in 1:sim_num) {
       index <- sample(1:N, n, replace = TRUE)
       data_uni <- data[index, ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = data_uni[, -1], y = data_uni[, 1])
+      result<-getMLE(data_uni[, -1],data_uni[,1],rep(1/length(data_uni[,1]),length(data_uni[,1])))
       par_uni[i, ] <- result$par
     }
     end_time <- Sys.time()
@@ -41,15 +66,19 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
       # pilot
       index <- sample(1:N, n0, replace = TRUE)
       data_p <- data[index, ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = data_p[, -1], y = data_p[, 1])
+      result<-getMLE(data_p[, -1],data_p[, 1],rep(1/length(data_p[,1]),length(data_p[,1])))
       par_p <- result$par
       # prob
-      w <- solve(t(data_p[, -1]) %*% (data_p[, -1] * as.numeric(exp(data_p[, -1] %*% par_p))))
-      sub_pro <- sqrt((data[, 1] - exp(data[, -1] %*% par_p))^2 * rowSums((data[, -1] %*% w)^2))
+      p <- 1 - 1 / (1 + exp(data[, -1] %*% par_p))
+      p_p <- p[index]
+      w_p <- p_p * (1 - p_p)
+      w_p <- solve(t(data_p[, -1]) %*% (data_p[, -1] * w_p))
+      sub_pro <- sqrt((data[, 1] - p)^2 * rowSums((data[, -1] %*% w_p)^2))
+      #sub_pro <- sub_pro / sum(sub_pro)
       # subsampling
       index <- sample(1:N, n, replace = TRUE, prob = sub_pro)
       data_sub <- data[index, ]
-      result <- optim(par = par00, Lw, hessian = FALSE, method = "BFGS", X = data_sub[, -1], y = data_sub[, 1], w = sub_pro[1] / sub_pro[index])
+      result<-getMLE(data_sub[, -1],data_sub[,1],1/sub_pro[index])
       par_sub[i, ] <- result$par
     }
     end_time <- Sys.time()
@@ -69,14 +98,16 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
       # pilot
       index <- sample(1:N, n0, replace = TRUE)
       data_p <- data[index, ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = data_p[, -1], y = data_p[, 1])
+      result<-getMLE(data_p[, -1],data_p[, 1],rep(1/length(data_p[,1]),length(data_p[,1])))
       par_p <- result$par
       # stra
-      b <- as.numeric(data_p[, -1] %*% par_p)
-      w_p <- solve(t(data_p[, -1]) %*% (data_p[, -1] * b) / n0) 
-      V <- cov(data_p[, -1] %*% w_p * (data_p[, 1] - exp(b)))
+      p <- 1 - 1 / (1 + exp(data[, -1] %*% par_p))
+      p_p <- p[index]
+      w_p <- p_p * (1 - p_p)
+      w_p <- solve(t(data_p[, -1]) %*% (data_p[, -1] * w_p))
+      V <- cov(data_p[, -1] %*% w_p * as.numeric(data_p[, 1] - p_p))
       A <- svd(V, d, d)$u
-      Y <- as.numeric(data[, 1] - exp(data[, -1] %*% result$par)) * (data[, -1] %*% (w_p %*% A[1, ]))
+      Y <- as.numeric(data[, 1] - p) * (data[, -1] %*% (w_p %*% A[, 1]))
       order <- order(Y)
       # subsampling
       qua <- floor(N * seq(from = 0, to = 1, by = 1 / m))
@@ -86,10 +117,10 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
         nj <- round(n / m)   
         indexj <- sample((qua[j] + 1):qua[j + 1], nj, replace = TRUE)
         index <- c(index, indexj)
+        prob1 <- c(prob1, nj / length((qua[j] + 1):qua[j + 1]) * N)
       }
       data_str <- data[order[index], ]
-      
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = data_str[, -1], y = data_str[, 1])
+      result<-getMLE(data_str[, -1],data_str[,1],1/prob1)
       par_str[i, ] <- result$par
     }
     end_time <- Sys.time()
@@ -109,16 +140,17 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
       # pilot
       index <- sample(1:N, n0, replace = TRUE)
       data_p <- data[index, ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = data_p[, -1], y = data_p[, 1])
+      result<-getMLE(data_p[, -1],data_p[, 1],rep(1/length(data_p[,1]),length(data_p[,1])))
       par_p <- result$par
       # prob
-      b <- as.numeric(data_p[, -1] %*% par_p)
-      w_p <- solve(t(data_p[, -1]) %*% (data_p[, -1] * b) / n0) 
-      inf0 <- as.numeric(data[, 1] - exp(data[, -1] %*% result$par)) * data[, -1]
-      sub_pro <- sqrt(rowSums((inf0 %*% w_p)^2))
-      V <- cov(data_p[, -1] %*% w_p * (data_p[, 1] - exp(b)))
+      p <- 1 - 1 / (1 + exp(data[, -1] %*% par_p))
+      p_p <- p[index]
+      w_p <- p_p * (1 - p_p)
+      w_p <- solve(t(data_p[, -1]) %*% (data_p[, -1] * w_p))
+      sub_pro <- sqrt((data[, 1] - p)^2 * rowSums((data[, -1] %*% w_p)^2))
+      V <- cov(data_p[, -1] %*% w_p * as.numeric(data_p[, 1] - p_p))
       A <- svd(V, d, d)$u
-      Y <- inf0 %*% (w_p %*% A[1, ])
+      Y <- as.numeric(data[, 1] - p) * (data[, -1] %*% (w_p %*% A[, 1]))
       order <- order(Y)
       # subsampling
       order_pro <- sub_pro[order]
@@ -138,7 +170,7 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
         prob1 <- c(prob1, nj * order_pro[indexj] / (sum(order_pro_j)))
       }
       data_str <- data[order[index], ]
-      result <- optim(par = par00, Lw, hessian = FALSE, method = "BFGS", X = data_str[, -1], y = data_str[, 1], w = prob1[1] / prob1)
+      result<-getMLE(data_str[, -1],data_str[,1],1/prob1)
       par_str[i, ] <- result$par
     }
     end_time <- Sys.time()
@@ -157,17 +189,18 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
       # pilot
       index <- sample(1:N, n0, replace = TRUE)
       data_p <- data[index, ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = data_p[, -1], y = data_p[, 1])
+      result<-getMLE(data_p[, -1],data_p[, 1],rep(1/length(data_p[,1]),length(data_p[,1])))
       par_p <- result$par
       # prob
-      b <- as.numeric(data_p[, -1] %*% par_p)
-      w_p <- solve(t(data_p[, -1]) %*% (data_p[, -1] * b) / n0) 
-      inf0 <- as.numeric(data[, 1] - exp(data[, -1] %*% result$par)) * data[, -1]
-      sub_pro <- sqrt(rowSums((inf0 %*% w_p)^2))
-      sub_pro <- sub_pro / sum(sub_pro)
-      V <- cov(data_p[, -1] %*% w_p * (data_p[, 1] - exp(b)))
+      p <- 1 - 1 / (1 + exp(data[, -1] %*% par_p))
+      p_p <- p[index]
+      w_p <- p_p * (1 - p_p)
+      w_p <- solve(t(data_p[, -1]) %*% (data_p[, -1] * w_p))
+      sub_pro <- sqrt((data[, 1] - p)^2 * rowSums((data[, -1] %*% w_p)^2))
+      sub_pro <- sub_pro/sum(sub_pro)
+      V <- cov(data_p[, -1] %*% w_p * as.numeric(data_p[, 1] - p_p))
       A <- svd(V, d, d)$u
-      Y <- inf0 %*% (w_p %*% A[1, ])
+      Y <- as.numeric(data[, 1] - p) * (data[, -1] %*% (w_p %*% A[, 1]))
       order <- order(Y)
       # subsampling
       order_pro <- sub_pro[order]
@@ -181,12 +214,13 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
       prob1 <- c()
       for (j in 1:(n - 1)) {
         nj <- 1
-        indexj <- sample((qua[j] + 1):qua[j + 1], nj, replace = TRUE, prob = order_pro[(qua[j] + 1):qua[j + 1]])
+        if(length((qua[j] + 1):qua[j + 1]) == 1) {indexj=qua[j + 1]}
+        else{indexj <- sample((qua[j] + 1):qua[j + 1], nj, replace = TRUE, prob = order_pro[(qua[j] + 1):qua[j + 1]])}
         index <- c(index, indexj)
         prob1 <- c(prob1, nj * order_pro[indexj] / (sum(order_pro[(qua[j] + 1):qua[j + 1]])))
       }
       data_str <- data[order[index], ]
-      result <- optim(par = par00, Lw, hessian = FALSE, method = "BFGS", X = data_str[, -1], y = data_str[, 1], w = prob1[1] / prob1)
+      result<-getMLE(data_str[, -1],data_str[,1],1/prob1)
       par_str[i, ] <- result$par
     }
     end_time <- Sys.time()
@@ -205,19 +239,18 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
       # pilot
       index <- sample(1:N, n0, replace = TRUE)
       data_p <- data[index, ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = data_p[, -1], y = data_p[, 1])
+      result<-getMLE(data_p[, -1],data_p[, 1],rep(1/length(data_p[,1]),length(data_p[,1])))
       par_p <- result$par
-      # stra
-      b <- as.numeric(data_p[, -1] %*% par_p)
-      w_p <- solve(t(data_p[, -1]) %*% (data_p[, -1] * b) / n0) 
-      V <- cov(data_p[, -1] %*% w_p * (data_p[, 1] - exp(b)))
+      # prob
+      p <- 1 - 1 / (1 + exp(data[, -1] %*% par_p))
+      p_p <- p[index]
+      w_p <- p_p * (1 - p_p)
+      w_p <- solve(t(data_p[, -1]) %*% (data_p[, -1] * w_p))
+      V <- cov(data_p[, -1] %*% w_p * as.numeric(data_p[, 1] - p_p))
       A <- svd(V, d, d)$u
-      Y <- as.numeric(data[, 1] - exp(data[, -1] %*% result$par)) * (data[, -1] %*% (w_p %*% A[1, ]))
+      Y <- as.numeric(data[, 1] - p) * (data[, -1] %*% (w_p %*% A[, 1]))
       order <- order(Y)
       sub_pro <- rep(1 / N, N)
-      # subsampling
-      order_pro <- sub_pro[order]
-      pro_sum <- cumsum(order_pro)
       # subsampling
       order_pro <- sub_pro[order]
       pro_sum <- cumsum(order_pro)
@@ -231,7 +264,7 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
         prob1 <- c(prob1, nj * order_pro[indexj] / (sum(order_pro[(qua[j] + 1):qua[j + 1]])))
       }
       data_str <- data[order[index], ]
-      result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = data_str[, -1], y = data_str[, 1])
+      result<-getMLE(data_str[, -1],data_str[,1],1/prob1)
       par_str[i, ] <- result$par
     }
     end_time <- Sys.time()
@@ -242,56 +275,81 @@ sub_est_sim <- function(data, method, n0 = 200, n = 1000, sim_num = 2, d = 5, pa
       Bias[i] <- mean(par_str[, i] - par0[i]) 
     }
   }
-  
-  time <- (end_time - start_time) / sim_num
+  duration <- difftime(end_time, start_time, units = "secs")
+  time <- as.numeric(duration) / sim_num
   result <- list(MSE, sum(MSE), time)
   return(result)
 }
 
 
-N <- 1000000
 library(MASS)
 set.seed(123)
-x <- matrix(runif(4 * N, 0, 1), nrow = N, ncol = 4, byrow = TRUE)
-par <- 0.5 * c(1, 1, 1, 1, 1)
-y <- rep(0, N)
-for (i in 1:N) {
-  y[i] <- rpois(1, exp(par[1] + x[i, ] %*% par[-1]))
-}
-data <- cbind(y, x)
-data <- as.data.frame(data)
 
-X <- as.matrix(cbind(rep(1, N), data[, -1]))
-start_time <- Sys.time()
-par00 <- c(0, 0, 0, 0, 0)
+cas = 1
+N = 500000
+  par <- 0.1 * rep(1, 15)
+  d <- length(par)
 
+  set.seed(123)
+  if (cas == 1) {
+    Sigma <- matrix(0.5, nrow = d-1, ncol = d-1)+ 0.5 * diag(d-1)
+    x <- mvrnorm(N, rep(0, d-1), Sigma)
+  }
+  if (cas == 2) {
+    Sigma <- matrix(0.5, nrow = d-1, ncol = d-1)+ 0.5 * diag(d-1)
+    x <- mvrnorm(N, rep(0.5, d-1), Sigma)
+  }
+  if (cas == 3) {
+    sds <- 1 / (1:(d-1))
+    Corr_mat <- matrix(0.5, nrow = (d-1), ncol = (d-1))
+    diag(Corr_mat) <- 1
+    Sigma <- diag(sds) %*% Corr_mat %*% diag(sds)
+    x <- mvrnorm(N, rep(0, d-1), Sigma)
+  }
+  if (cas == 4) x <- matrix(rexp((d-1) * N, rate = 2), nrow = N, ncol = d-1, byrow = TRUE)
+  p <- exp(par[1] + x %*% par[-1]) / (1 + exp(par[1] + x %*% par[-1]))
+  u <- runif(N, 0, 1)
+  y <- as.numeric(u < p)
+  data <- cbind(y, x)
+  data <- as.data.frame(data)
+  
+  X <- as.matrix(cbind(rep(1, N), data[, -1]))
+  start_time <- Sys.time()
+  par00 <- rep(0, d)
+  result <- getMLE(X,y,rep(1/N,N))
+  end_time <- Sys.time()
+  end_time - start_time
 result_table_time <- matrix(rep(0, 28), nrow = 7, ncol = 4)
-
-result <- optim(par = par00, L, hessian = FALSE, method = "BFGS", X = X, y = y)
-end_time <- Sys.time()
 result_table_time[1, 1] <- end_time - start_time
 par0 <- result$par
 
-result <- sub_est_sim(data, "uniform", 200, 1000, 100, 5, par0)
+result <- sub_est_sim(data, "uniform", 500, 2500, 50, d, par0)
 result_table_time[2, 1] <- result[[3]]
-result <- sub_est_sim(data, "osmac", 200, 1000, 100, 5, par0)
+result <- sub_est_sim(data, "osmac", 500, 2500, 50, d, par0)
 result_table_time[3, 1] <- result[[3]]
+
+result_table_time
 
 col <- c(5, 10, 50, 100)
 row <- c("stratified-uni", "stratified-osmac")
 for (i in row) {
   for (m in col) {
-    result <- sub_est_sim(data, i, 200, 1000, 100, 5, par0, m)
+    result <- sub_est_sim(data, i, 500, 2500, 50, d, par0, m)
     i1 <- which(row == i) + 3
     j1 <- which(col == m)
     result_table_time[i1, j1] <- result[[3]]
   }
 }
 
-result <- sub_est_sim(data, "o-stratified-osmac", 200, 1000, 100, 5, par0)
+result <- sub_est_sim(data, "o-stratified-uni", 500, 2500, 50, d, par0)
 result_table_time[6, 1] <- result[[3]]
 
-result <- sub_est_sim(data, "o-stratified-uni", 200, 1000, 100, 5, par0)
+result <- sub_est_sim(data, "o-stratified-osmac", 500, 2500, 50, d, par0)
 result_table_time[7, 1] <- result[[3]]
 
+result_table_time
+
+result_table_time = round(result_table_time, 4)
+
 write.csv(result_table_time, "time.csv")
+
